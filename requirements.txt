@@ -1,2 +1,5 @@
-requests
 notion-client
+requests
+xarray
+netCDF4
+ 
