@@ -12,28 +12,16 @@ PAGE_ID = os.environ["NOTION_PAGE_ID"]
 notion = Client(auth=NOTION_TOKEN)
 
 # =========================================================
-# TIME HANDLING (UTC reference + Arctic "yesterday")
+# TIME
 # =========================================================
 now = datetime.utcnow()
 yesterday = now - timedelta(days=1)
-
 date_str = yesterday.strftime("%Y-%m-%d")
 
-# NASA Worldview (yesterday snapshot)
-worldview_url = (
-    "https://worldview.earthdata.nasa.gov/"
-    f"?t={date_str}-T18%3A00%3A00Z"
-)
-
 # =========================================================
-# TEMPERATURE MODULE (REAL DATA)
+# TEMPERATURE
 # =========================================================
 def get_temperature():
-    """
-    Arctic temperature from Open-Meteo (ERA5-based reanalysis).
-    Herschel Island coordinates.
-    """
-
     try:
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
@@ -45,10 +33,8 @@ def get_temperature():
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
 
-        temp = data["current_weather"]["temperature"]
-
         return {
-            "temperature": temp,
+            "temperature": data["current_weather"]["temperature"],
             "source": "Open-Meteo (ERA5 reanalysis)",
             "status": "ok"
         }
@@ -56,15 +42,12 @@ def get_temperature():
     except Exception:
         return {
             "temperature": None,
-            "source": "fallback (data unavailable)",
+            "source": "fallback",
             "status": "missing"
         }
 
 temp_data = get_temperature()
 
-# =========================================================
-# DASHBOARD TEXT
-# =========================================================
 temp_text = (
     f"Current air temperature: {temp_data['temperature']} °C\n"
     f"Source: {temp_data['source']}\n"
@@ -72,9 +55,31 @@ temp_text = (
 )
 
 # =========================================================
-# NOTION BLOCKS
+# SATELLITE IMAGE (REAL EMBED)
+# =========================================================
+def get_satellite_image_url(date_str):
+    bbox = "-141,68,-136,71"  # Herschel Island region
+
+    return (
+        "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
+        "?service=WMS"
+        "&request=GetMap"
+        "&layers=MODIS_Terra_CorrectedReflectance_TrueColor"
+        "&styles="
+        "&format=image/png"
+        f"&bbox={bbox}"
+        "&width=1024"
+        "&height=768"
+        f"&time={date_str}"
+    )
+
+sat_img_url = get_satellite_image_url(date_str)
+
+# =========================================================
+# DASHBOARD BLOCKS
 # =========================================================
 blocks = [
+
     # TITLE
     {
         "object": "block",
@@ -89,7 +94,7 @@ blocks = [
         }
     },
 
-    # TIMESTAMP
+    # TIME
     {
         "object": "block",
         "type": "paragraph",
@@ -103,14 +108,10 @@ blocks = [
         }
     },
 
-    {
-        "object": "block",
-        "type": "divider",
-        "divider": {}
-    },
+    {"object": "block", "type": "divider", "divider": {}},
 
     # =====================================================
-    # SATELLITE SECTION
+    # SATELLITE IMAGE (NOW REAL IMAGE BLOCK)
     # =====================================================
     {
         "object": "block",
@@ -119,7 +120,7 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "🛰 Satellite (Worldview – previous day)"
+                    "content": "🛰 Satellite (MODIS True Color – Yesterday)"
                 }
             }]
         }
@@ -127,32 +128,17 @@ blocks = [
 
     {
         "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{
-                "type": "text",
-                "text": {
-                    "content": f"Automated observation for {date_str} (UTC reference)."
-                }
-            }]
-        }
-    },
-
-    {
-        "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{
-                "type": "text",
-                "text": {
-                    "content": worldview_url
-                }
-            }]
+        "type": "image",
+        "image": {
+            "type": "external",
+            "external": {
+                "url": sat_img_url
+            }
         }
     },
 
     # =====================================================
-    # TEMPERATURE SECTION
+    # TEMPERATURE
     # =====================================================
     {
         "object": "block",
@@ -180,21 +166,8 @@ blocks = [
         }
     },
 
-    {
-        "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{
-                "type": "text",
-                "text": {
-                    "content": "Note: Temperature is based on ERA5 reanalysis via Open-Meteo. Suitable for Arctic regional monitoring where in-situ data is intermittent."
-                }
-            }]
-        }
-    },
-
     # =====================================================
-    # SEA ICE (placeholder next module)
+    # SEA ICE (placeholder)
     # =====================================================
     {
         "object": "block",
@@ -216,14 +189,14 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "Next module: OSI SAF sea ice concentration (satellite-derived) + seasonal classification."
+                    "content": "Next: OSI SAF sea ice concentration integration."
                 }
             }]
         }
     },
 
     # =====================================================
-    # TIDES / SEA LEVEL
+    # TIDES
     # =====================================================
     {
         "object": "block",
@@ -245,27 +218,7 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "Fisheries and Oceans Canada tide gauge (06525) + Copernicus sea level anomaly integration planned."
-                }
-            }]
-        }
-    },
-
-    # FOOTER
-    {
-        "object": "block",
-        "type": "divider",
-        "divider": {}
-    },
-
-    {
-        "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{
-                "type": "text",
-                "text": {
-                    "content": "All timestamps are in UTC. Interpretations should be referenced to Inuvik local time (seasonally UTC−7/−8)."
+                    "content": "DFO tide gauge (06525) + Copernicus sea level anomaly planned."
                 }
             }]
         }
@@ -273,15 +226,15 @@ blocks = [
 ]
 
 # =========================================================
-# CLEAR EXISTING PAGE CONTENT
+# CLEAR PAGE
 # =========================================================
-existing_blocks = notion.blocks.children.list(block_id=PAGE_ID)
+existing = notion.blocks.children.list(block_id=PAGE_ID)
 
-for b in existing_blocks["results"]:
+for b in existing["results"]:
     notion.blocks.delete(block_id=b["id"])
 
 # =========================================================
-# PUSH NEW DASHBOARD
+# UPDATE PAGE
 # =========================================================
 notion.blocks.children.append(
     block_id=PAGE_ID,
