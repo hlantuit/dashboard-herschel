@@ -1,8 +1,9 @@
+import os
 from notion_client import Client
 from datetime import datetime
 
-NOTION_TOKEN = "PUT_YOUR_TOKEN_HERE"
-PAGE_ID = "PUT_YOUR_PAGE_ID_HERE"
+NOTION_TOKEN = os.environ["NOTION_TOKEN"]
+PAGE_ID = os.environ["NOTION_PAGE_ID"]
 
 notion = Client(auth=NOTION_TOKEN)
 
@@ -23,4 +24,4 @@ notion.pages.update(
     }
 )
 
-print("Updated Notion")
+print("SUCCESS: Notion updated")
