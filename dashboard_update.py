@@ -628,9 +628,19 @@ if marine_entries:
     # free-form prose unbolded — there's no single "value" to highlight in
     # a sentence like "Wind light becoming southeast 15 knots", and trying
     # to extract just the number would risk mangling the wording.
+    #
+    # The feed's own title text includes "- Yukon Coast" (e.g. "Forecast
+    # for Today Tonight and Wednesday - Yukon Coast"), which is redundant
+    # since the section heading above already says "Yukon Coast" — strip
+    # it here rather than leave it duplicated in the body text.
+    import re
+ 
+    def _strip_yukon_coast(text):
+        return re.sub(r"\s*[-–—]\s*Yukon Coast\s*$", "", text, flags=re.IGNORECASE).strip()
+ 
     lines = []
     for e in marine_entries[:6]:
-        title = e["title"].strip()
+        title = _strip_yukon_coast(e["title"].strip())
         summary = e["summary"].strip() if e["summary"] else ""
         if summary and summary != title:
             lines.append([("", title), ": ", summary])
