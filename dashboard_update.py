@@ -119,18 +119,6 @@ def paragraph(lines):
     return {"object": "block", "paragraph": {"rich_text": build_bolded_lines(lines)}, "type": "paragraph"}
  
  
-def callout(text, emoji="📌", color="gray_background"):
-    return {
-        "object": "block",
-        "type": "callout",
-        "callout": {
-            "rich_text": [{"type": "text", "text": {"content": text}}],
-            "icon": {"type": "emoji", "emoji": emoji},
-            "color": color,
-        },
-    }
- 
- 
 def link_paragraph(label, url):
     """Paragraph block containing a clickable link."""
     return {
@@ -240,13 +228,18 @@ def get_weather():
         data = r.json()
  
         cw = data["current_weather"]
-        current_time = cw["time"]  # e.g. "2026-06-22T14:00"
+        current_time = cw["time"]  # e.g. "2026-06-23T07:15" — can be off the hour
  
-        # Match the current hour in the hourly arrays to current_weather's timestamp
+        # current_weather's timestamp can fall on a quarter-hour, but the
+        # hourly arrays are always on the hour — round down before matching,
+        # or exact-match .index() fails whenever the minutes aren't ":00".
+        current_dt = datetime.strptime(current_time, "%Y-%m-%dT%H:%M")
+        current_hour = current_dt.replace(minute=0).strftime("%Y-%m-%dT%H:%M")
+ 
         humidity = None
         pressure = None
         try:
-            idx = data["hourly"]["time"].index(current_time)
+            idx = data["hourly"]["time"].index(current_hour)
             humidity = data["hourly"]["relativehumidity_2m"][idx]
             pressure = data["hourly"]["pressure_msl"][idx]
         except (ValueError, KeyError, IndexError) as e:
@@ -824,3 +817,4 @@ print("Dashboard updated successfully")
 #   netCDF4
 #   notion-client
 #   requests
+ 
