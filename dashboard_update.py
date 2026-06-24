@@ -1012,6 +1012,153 @@ temp_chart_bytes, temp_chart_caption = build_temperature_chart()
  
  
 # =========================================================
+# MODULE 1e — WIND VECTOR CHART (last 30 days)
+# Fetches hourly wind speed/direction from the same Open-Meteo historical
+# archive used for temperature, aggregates to one vector per day (using
+# proper vector averaging — not naive angle averaging, which is wrong
+# near the 0/360 boundary), and renders as color-graded direction arrows.
+# =========================================================
+def wind_to_uv(speed, direction_deg):
+    """
+    Converts meteorological wind speed/direction (direction = where wind
+    comes FROM, standard convention) to u (eastward) / v (northward)
+    vector components, for correct vector-based averaging.
+    """
+    direction_rad = math.radians(direction_deg)
+    u = -speed * math.sin(direction_rad)
+    v = -speed * math.cos(direction_rad)
+    return u, v
+ 
+ 
+def uv_to_wind(u, v):
+    speed = math.hypot(u, v)
+    direction_rad = math.atan2(-u, -v)
+    direction_deg = math.degrees(direction_rad) % 360
+    return speed, direction_deg
+ 
+ 
+def fetch_hourly_wind(start_date, end_date):
+    """
+    Fetches hourly wind speed and direction for [start_date, end_date]
+    from Open-Meteo's historical archive. Returns a dict
+    {date_str: [(speed, direction), ...]} grouped by calendar day, or {}
+    on failure.
+    """
+    try:
+        url = "https://archive-api.open-meteo.com/v1/archive"
+        params = {
+            "latitude": LAT,
+            "longitude": LON,
+            "start_date": start_date.strftime("%Y-%m-%d"),
+            "end_date": end_date.strftime("%Y-%m-%d"),
+            "hourly": "windspeed_10m,winddirection_10m",
+            "timezone": "UTC",
+        }
+        r = requests.get(url, params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        speeds = hourly.get("windspeed_10m", [])
+        directions = hourly.get("winddirection_10m", [])
+ 
+        by_day = {}
+        for t, s, d in zip(times, speeds, directions):
+            if s is None or d is None:
+                continue
+            day = t[:10]
+            by_day.setdefault(day, []).append((s, d))
+        return by_day
+    except Exception as e:
+        print("WIND VECTOR FETCH FAILED:", e)
+        return {}
+ 
+ 
+def build_wind_vector_chart():
+    """
+    Builds a 30-day wind vector chart: one arrow per day, pointing in the
+    direction the wind blows TOWARD (so arrows visually show flow
+    direction), colored by speed. Returns (png_bytes, caption).
+    """
+    end = (now - timedelta(days=1)).date()
+    start = end - timedelta(days=29)
+ 
+    by_day = fetch_hourly_wind(start, end)
+    if not by_day:
+        return None, "Wind vector data unavailable — fetch failed. Check Action logs."
+ 
+    day_labels = sorted(by_day.keys())
+    daily_speed = []
+    daily_dir = []
+    for day in day_labels:
+        readings = by_day[day]
+        us, vs = [], []
+        for s, d in readings:
+            u, v = wind_to_uv(s, d)
+            us.append(u)
+            vs.append(v)
+        avg_u, avg_v = sum(us) / len(us), sum(vs) / len(vs)
+        speed, direction = uv_to_wind(avg_u, avg_v)
+        daily_speed.append(speed)
+        daily_dir.append(direction)
+ 
+    try:
+        NOTION_TEXT_GRAY = "#787774"
+        NOTION_LIGHT_GRID = "#EDECEC"
+ 
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        fig, ax = plt.subplots(figsize=(10, 3.6), dpi=150)
+        fig.patch.set_alpha(0)
+        ax.set_facecolor("none")
+ 
+        x = list(range(len(day_labels)))
+        # Arrow components: direction is where wind comes FROM, so the
+        # arrow should point in the direction the wind blows TOWARD —
+        # that's 180 degrees from the "from" direction.
+        u_arrows = [-math.sin(math.radians(d)) for d in daily_dir]
+        v_arrows = [-math.cos(math.radians(d)) for d in daily_dir]
+ 
+        quiv = ax.quiver(
+            x, [0] * len(x), u_arrows, v_arrows,
+            daily_speed, cmap="YlOrRd", scale=24, width=0.005,
+            pivot="middle", clim=(0, 40),  # 0-40 km/h covers typical regional range without making calm days look artificially extreme
+        )
+ 
+        cbar = fig.colorbar(quiv, ax=ax, orientation="vertical", pad=0.02, fraction=0.04)
+        cbar.set_label("Wind speed (km/h)", fontsize=9, color=NOTION_TEXT_GRAY)
+        cbar.ax.tick_params(labelsize=8, colors=NOTION_TEXT_GRAY)
+        cbar.outline.set_visible(False)
+ 
+        for spine in ["top", "right", "left"]:
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
+ 
+        tick_positions = x[::3]
+        tick_labels = [datetime.strptime(day_labels[i], "%Y-%m-%d").strftime("%b %d") for i in tick_positions]
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
+        ax.set_yticks([])
+        ax.tick_params(axis="x", length=0)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_xlim(-1, len(x))
+ 
+        fig.tight_layout()
+        png_bytes = fig_to_png_bytes(fig)
+        caption = (
+            f"Daily-average wind vectors, last 30 days. Arrows point in the direction "
+            f"the wind blows toward; color shows speed. Source: Open-Meteo (ERA5)."
+        )
+        return png_bytes, caption
+ 
+    except Exception as e:
+        print("WIND VECTOR CHART RENDER FAILED:", e)
+        return None, "Wind vector chart could not be generated — see Action logs."
+ 
+ 
+wind_chart_bytes, wind_chart_caption = build_wind_vector_chart()
+ 
+ 
+# =========================================================
 # MODULE 2 — SATELLITE: MODIS true color via GIBS WMS
 # =========================================================
 # Final displayed image size (after rotation + crop).
@@ -1439,6 +1586,15 @@ if temp_chart_bytes:
         print("TEMP CHART NOTION UPLOAD FAILED:", e)
         temp_chart_caption = "Chart generated but upload to Notion failed — see Action logs."
  
+wind_chart_block = None
+if wind_chart_bytes:
+    try:
+        uid = upload_image_to_notion(wind_chart_bytes, "wind_chart.png")
+        wind_chart_block = image_block_from_upload(uid)
+    except Exception as e:
+        print("WIND CHART NOTION UPLOAD FAILED:", e)
+        wind_chart_caption = "Wind chart generated but upload to Notion failed — see Action logs."
+ 
 weather_icon_block = None
 if weather_icon_bytes:
     try:
@@ -1529,10 +1685,18 @@ blocks.append(callout(marine_text, emoji="⚓", color="purple_background"))
 blocks.append(divider())
  
 # --- Temperature chart (full width, needs room for the image) ---
-blocks.append(heading("📈 Temperature — last 10 days vs. 30-year average"))
+blocks.append(heading("📈 Temperature — last 30 days vs. 30-year average"))
 if temp_chart_block:
     blocks.append(temp_chart_block)
 blocks.append(paragraph(temp_chart_caption if temp_chart_bytes else "Chart could not be generated — see Action logs."))
+ 
+blocks.append(divider())
+ 
+# --- Wind vector chart (full width, needs room for the image) ---
+blocks.append(heading("🧭 Wind — last 30 days"))
+if wind_chart_block:
+    blocks.append(wind_chart_block)
+blocks.append(paragraph(wind_chart_caption if wind_chart_bytes else "Wind vector chart could not be generated — see Action logs."))
  
 blocks.append(divider())
  
