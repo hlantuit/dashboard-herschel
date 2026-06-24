@@ -1345,6 +1345,72 @@ else:
  
  
 # =========================================================
+# TIDE FORECAST CURVE
+# Renders the same 24h water level predictions already fetched above as a
+# chart, styled consistently with the temperature and sun position charts.
+# =========================================================
+def build_tide_chart(tide_points):
+    if not tide_points:
+        return None, "Tide chart unavailable — no prediction data."
+ 
+    try:
+        sorted_points = sorted(tide_points, key=lambda p: p["eventDate"])
+        times = [datetime.fromisoformat(p["eventDate"].replace("Z", "+00:00")) for p in sorted_points]
+        levels = [p["value"] for p in sorted_points]
+ 
+        # Hours since the start of the window, for a clean numeric x-axis
+        t0 = times[0]
+        hours = [(t - t0).total_seconds() / 3600 for t in times]
+ 
+        current_idx = min(range(len(times)), key=lambda i: abs((times[i] - now.replace(tzinfo=timezone.utc)).total_seconds()))
+        current_hour = hours[current_idx]
+        current_level = levels[current_idx]
+ 
+        NOTION_BLUE = "#337EA9"
+        NOTION_RED = "#E16259"
+        NOTION_TEXT_GRAY = "#787774"
+        NOTION_LIGHT_GRID = "#EDECEC"
+ 
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        fig, ax = plt.subplots(figsize=(5.5, 3.2), dpi=150)
+        fig.patch.set_alpha(0)
+        ax.set_facecolor("none")
+ 
+        ax.fill_between(hours, levels, min(levels), color=NOTION_BLUE, alpha=0.12, linewidth=0, zorder=1)
+        ax.plot(hours, levels, linewidth=2.5, color=NOTION_BLUE, zorder=2)
+        ax.plot([current_hour], [current_level], marker="o", markersize=8,
+                 color=NOTION_RED, markeredgecolor="white", markeredgewidth=1.5, zorder=3)
+ 
+        for spine in ["top", "right", "left"]:
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
+ 
+        ax.set_xlim(0, max(hours))
+        tick_hours = list(range(0, int(max(hours)) + 1, 6))
+        tick_labels = [(t0 + timedelta(hours=h)).strftime("%H:%M") for h in tick_hours]
+        ax.set_xticks(tick_hours)
+        ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY)
+        ax.tick_params(axis="y", labelsize=9, colors=NOTION_TEXT_GRAY, length=0)
+        ax.tick_params(axis="x", length=0)
+        ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
+        ax.xaxis.grid(False)
+        ax.set_axisbelow(True)
+        ax.set_ylabel("Water level (m)", fontsize=10, color=NOTION_TEXT_GRAY)
+ 
+        fig.tight_layout()
+        png_bytes = fig_to_png_bytes(fig)
+        caption = f"Predicted water level, next 24h (UTC), starting {t0.strftime('%H:%M')}. Source: DFO/CHS IWLS."
+        return png_bytes, caption
+ 
+    except Exception as e:
+        print("TIDE CHART FAILED:", e)
+        return None, "Tide chart could not be generated — see Action logs."
+ 
+ 
+tide_chart_bytes, tide_chart_caption = build_tide_chart(tide_points)
+ 
+ 
+# =========================================================
 # UPLOAD ANY VALID IMAGES TO NOTION
 # =========================================================
 modis_block = None
@@ -1383,6 +1449,15 @@ if sun_chart_bytes:
     except Exception as e:
         print("SUN CHART NOTION UPLOAD FAILED:", e)
         sun_chart_caption = "Sun chart generated but upload to Notion failed — see Action logs."
+ 
+tide_chart_block = None
+if tide_chart_bytes:
+    try:
+        uid = upload_image_to_notion(tide_chart_bytes, "tide_chart.png")
+        tide_chart_block = image_block_from_upload(uid)
+    except Exception as e:
+        print("TIDE CHART NOTION UPLOAD FAILED:", e)
+        tide_chart_caption = "Tide chart generated but upload to Notion failed — see Action logs."
  
  
 # =========================================================
@@ -1460,6 +1535,10 @@ tide_column = [
     heading("🌊 Tides", level=3),
     callout(tide_text, emoji="🌊", color="blue_background"),
 ]
+if tide_chart_block:
+    tide_column.append(tide_chart_block)
+tide_column.append(paragraph(tide_chart_caption if tide_chart_bytes else "Tide chart could not be generated — see Action logs."))
+ 
 permafrost_column = [
     heading("🧊 Permafrost (boreholes)", level=3),
     callout(
