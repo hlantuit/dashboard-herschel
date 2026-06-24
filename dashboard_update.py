@@ -939,15 +939,10 @@ def build_sun_curve_chart():
         fig.tight_layout()
         png_bytes = fig_to_png_bytes(fig)
  
-        max_elev = max(elevations)
-        min_elev = min(elevations)
-        if min_elev > 0:
-            note = "Sun stays above the horizon all day (midnight sun)."
-        elif max_elev < 0:
-            note = "Sun stays below the horizon all day (polar night)."
-        else:
-            note = "Sun crosses the horizon today."
-        caption = f"Solar elevation today (UTC), {day_start.strftime('%b %d')}. {note} Computed from standard solar position formulas, not measured."
+        caption = (
+            f"Solar elevation today (UTC), {day_start.strftime('%b %d')}. "
+            f"Computed from standard solar position formulas, not measured."
+        )
         return png_bytes, caption
  
     except Exception as e:
@@ -980,6 +975,7 @@ def fetch_daily_temps(start_date, end_date):
         }
         r = get_with_retry(url, params=params, timeout=20, retries=1)
         data = r.json()
+        daily = data.get("daily", {})
         times = daily.get("time", [])
         temps = daily.get("temperature_2m_mean", [])
         return dict(zip(times, temps))
@@ -1536,8 +1532,8 @@ def annotate_modis_image(png_bytes, points=None, scale_km=50):
             return x_px, y_px
  
         border_lon = -141.0
-        p1 = project_point(60.0, border_lon)   # well south of the visible frame
-        p2 = project_point(75.0, border_lon)   # well north of the visible frame
+        p1 = project_point(60.0, border_lon)    # well south of the visible frame
+        p2 = project_point(69.65, border_lon)  # the border's actual starting point at the Beaufort Sea coast — verified (69°39'N, 141°W); north of this is open ocean, not a land border
  
         # Dashed line: draw only the "on" segments of a repeating
         # on/off pattern along the p1->p2 line.
@@ -2039,11 +2035,11 @@ blocks.append(paragraph(water_level_chart_caption if water_level_chart_bytes els
 blocks.append(divider())
 blocks.append(disclaimer_paragraph(
     "Disclaimer: All data and imagery on this page are collated from external third-party sources "
-    "(including NASA GIBS/EOSDIS, Open-Meteo, sunrise-sunset.org, Environment Canada, and DFO/CHS) "
-    "and are displayed here for general informational purposes only. We hold no responsibility for "
-    "the accuracy, completeness, or timeliness of this data, and this page is not a substitute for "
-    "official sources. Do not use this information for navigation, safety-critical decisions, or any "
-    "other purpose where inaccurate or delayed data could cause harm."
+    "(including NASA GIBS/EOSDIS, Open-Meteo, sunrise-sunset.org, Environment Canada, DFO/CHS, and "
+    "Copernicus Marine Service) and are displayed here for general informational purposes only. We "
+    "hold no responsibility for the accuracy, completeness, or timeliness of this data, and this page "
+    "is not a substitute for official sources. Do not use this information for navigation, "
+    "safety-critical decisions, or any other purpose where inaccurate or delayed data could cause harm."
 ))
  
 # =========================================================
