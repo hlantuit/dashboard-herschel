@@ -1160,6 +1160,130 @@ temp_chart_bytes, temp_chart_caption = build_temperature_chart()
  
  
 # =========================================================
+# THAWING DEGREE DAYS HISTOGRAM (one bar per year, full year totals)
+# Thawing degree days = cumulative sum of mean daily temperatures above
+# 0°C, from Jan 1 through Dec 31 for past years (a real annual total), or
+# Jan 1 through yesterday for the current year (necessarily partial,
+# highlighted in a different color so it's not mistaken for a complete
+# year). Uses the same fetch_daily_temps function already verified for
+# the temperature chart, so failures/retries behave identically.
+# =========================================================
+def compute_tdd_from_temps(daily_temps, start_date, end_date):
+    """
+    Sums mean daily temps above 0°C from start_date through end_date
+    (inclusive). Missing days are skipped, not treated as 0 — using real
+    date arithmetic (not hand-rolled year shifting) so leap years are
+    handled correctly automatically.
+    """
+    total = 0.0
+    days_counted = 0
+    d = start_date
+    while d <= end_date:
+        temp = daily_temps.get(d.strftime("%Y-%m-%d"))
+        if temp is not None:
+            days_counted += 1
+            if temp > 0:
+                total += temp
+        d += timedelta(days=1)
+    return total, days_counted
+ 
+ 
+def build_tdd_histogram(num_years=25):
+    """
+    Builds a bar chart of annual thawing degree days for the past
+    num_years complete years, plus the current (partial) year in a
+    different color. Returns (png_bytes, caption).
+    """
+    today = now.date()
+    current_year = today.year
+ 
+    tdd_by_year = {}
+    days_counted_by_year = {}
+ 
+    # Past complete years: Jan 1 - Dec 31
+    for years_back in range(1, num_years + 1):
+        year = current_year - years_back
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+        temps = fetch_daily_temps(year_start, year_end)
+        if not temps:
+            print(f"TDD HISTOGRAM: no data for {year}, skipping")
+            continue
+        tdd, days_counted = compute_tdd_from_temps(temps, year_start, year_end)
+        # Require a reasonable fraction of the year's days to have data,
+        # or a single short outage could badly understate that year's TDD.
+        days_in_year = (year_end - year_start).days + 1
+        if days_counted < days_in_year * 0.8:
+            print(f"TDD HISTOGRAM: {year} only has {days_counted}/{days_in_year} days, skipping (too incomplete)")
+            continue
+        tdd_by_year[year] = tdd
+        days_counted_by_year[year] = days_counted
+ 
+    # Current year: Jan 1 - yesterday (today's mean isn't final yet)
+    current_start = date(current_year, 1, 1)
+    current_end = today - timedelta(days=1)
+    current_temps = fetch_daily_temps(current_start, current_end)
+    if current_temps:
+        current_tdd, current_days = compute_tdd_from_temps(current_temps, current_start, current_end)
+        tdd_by_year[current_year] = current_tdd
+        days_counted_by_year[current_year] = current_days
+ 
+    if not tdd_by_year:
+        return None, "Thawing degree days data unavailable — all fetches failed. Check Action logs."
+ 
+    print(f"TDD HISTOGRAM: years with data: {sorted(tdd_by_year.keys())}")
+ 
+    try:
+        NOTION_TEXT_GRAY = "#787774"
+        NOTION_BLUE = "#337EA9"
+        NOTION_RED = "#E16259"
+        NOTION_LIGHT_GRID = "#EDECEC"
+ 
+        plotted_years = sorted(tdd_by_year.keys())
+        plotted_values = [tdd_by_year[y] for y in plotted_years]
+        colors = [NOTION_RED if y == current_year else NOTION_BLUE for y in plotted_years]
+ 
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        fig, ax = plt.subplots(figsize=(10, 4.2), dpi=150)
+        fig.patch.set_alpha(0)
+        ax.set_facecolor("none")
+ 
+        x = range(len(plotted_years))
+        ax.bar(x, plotted_values, color=colors, width=0.7)
+ 
+        for spine in ["top", "right", "left"]:
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
+ 
+        ax.set_xticks(list(x))
+        ax.set_xticklabels([str(y) for y in plotted_years], fontsize=9, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
+        ax.tick_params(axis="y", labelsize=9, colors=NOTION_TEXT_GRAY, length=0)
+        ax.tick_params(axis="x", length=0)
+        ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
+        ax.set_axisbelow(True)
+        ax.set_ylabel("Thawing degree days (°C·days)", fontsize=10, color=NOTION_TEXT_GRAY)
+ 
+        fig.tight_layout()
+        png_bytes = fig_to_png_bytes(fig)
+ 
+        years_str = ", ".join(str(y) for y in plotted_years if y != current_year)
+        caption = (
+            f"Annual thawing degree days (sum of mean daily temperatures above 0°C, Jan 1–Dec 31), "
+            f"{plotted_years[0]}–{plotted_years[-1] - 1 if current_year in plotted_years else plotted_years[-1]}. "
+            f"Current year ({current_year}, in red) is partial: Jan 1 through {current_end.strftime('%b %d')} only, "
+            f"not directly comparable to complete-year totals. Source: Open-Meteo (ERA5)."
+        )
+        return png_bytes, caption
+ 
+    except Exception as e:
+        print("TDD HISTOGRAM RENDER FAILED:", e)
+        return None, "Thawing degree days chart could not be generated — see Action logs."
+ 
+ 
+tdd_histogram_bytes, tdd_histogram_caption = build_tdd_histogram()
+ 
+ 
+# =========================================================
 # MODULE 1e — WIND VECTOR CHART (last 30 days)
 # Fetches hourly wind speed/direction from the same Open-Meteo historical
 # archive used for temperature, aggregates to one vector per day (using
@@ -1796,72 +1920,69 @@ tide_chart_bytes, tide_chart_caption = build_tide_chart(tide_points)
  
  
 # =========================================================
-# MODULE — TOTAL WATER LEVEL (Copernicus Marine, tide + storm surge)
+# MODULE — TOTAL WATER LEVEL (TOPAZ6 Arctic model, tide + storm surge)
 # Unlike DFO IWLS (pure astronomical tide prediction from a station),
 # this product is a 3km HYCOM model that includes both tides AND storm
 # surge — i.e. the actual "total" water level signal, not just the
-# predictable tidal component. Verified dataset ID and variable name
-# directly from Copernicus's own Product User Manual (not guessed):
-# dataset "dataset-topaz6-arc-15min-3km-be", variable "zos" (meters).
+# predictable tidal component. Dataset and variable verified directly
+# from Copernicus's own Product User Manual: dataset
+# "dataset-topaz6-arc-15min-3km-be", variable "zos" (meters). Fetched via
+# plain xarray against the public THREDDS OPeNDAP endpoint (see
+# fetch_copernicus_water_level for why — copernicusmarine's own
+# open_dataset() reported no subset-compatible service for this dataset).
 # Update frequency is daily (forecast published ~00:30 UTC the next day),
 # not hourly — so this won't refresh every run the way other blocks do,
 # but the forecast curve itself remains valid and useful between updates.
 # =========================================================
-COPERNICUS_DATASET_ID = "dataset-topaz6-arc-15min-3km-be"
  
  
 def fetch_copernicus_water_level():
     """
     Fetches the total water level (sea surface height, tide + storm surge)
-    forecast for the next ~24h near Herschel Island from Copernicus
-    Marine's Arctic tide/surge model.
+    forecast for the next ~24h near Herschel Island from the TOPAZ6
+    Arctic tide/surge model.
+ 
+    Uses plain xarray against the public THREDDS OPeNDAP endpoint
+    (no Copernicus Marine authentication needed for this specific access
+    path) rather than the copernicusmarine library's open_dataset(),
+    since that wrapper reported "No service available for dataset with
+    command subset" for this specific dataset — its Marine Data Store
+    catalog apparently doesn't expose a subset-compatible service for
+    this dataset, even though the same underlying data is genuinely
+    accessible via plain OPeNDAP (confirmed via an independent published
+    usage example from the OpenDrift project, a third-party tool, using
+    this exact URL).
  
     Returns (times, values_m) as parallel lists, or (None, None) on
-    failure — credentials missing, network error, or any other issue —
-    so a problem here never blocks the rest of the dashboard.
+    failure — network error or any other issue — so a problem here
+    never blocks the rest of the dashboard.
     """
     try:
-        # The copernicusmarine library has no direct timeout/retries
-        # parameter on open_dataset() itself — these are configured via
-        # environment variables instead. Defaults are 60s timeout x 5
-        # retries per HTTP call, which can compound to many minutes if
-        # something (e.g. a credential issue) causes repeated failures.
-        # Setting tighter bounds here means a real problem fails fast
-        # rather than silently consuming the whole job's runtime.
-        os.environ.setdefault("COPERNICUSMARINE_HTTPS_TIMEOUT", "20")
-        os.environ.setdefault("COPERNICUSMARINE_HTTPS_RETRIES", "1")
+        import xarray as xr
  
-        import copernicusmarine
+        thredds_url = "https://thredds.met.no/thredds/dodsC/cmems/topaz6/dataset-topaz6-arc-15min-3km-be.ncml"
  
-        username = os.environ.get("COPERNICUS_USERNAME")
-        password = os.environ.get("COPERNICUS_PASSWORD")
-        if not username or not password:
-            print("COPERNICUS WATER LEVEL: credentials not found in environment, skipping")
-            return None, None
+        # The grid is polar stereographic (x/y in meters, same pole and
+        # central meridian convention as our existing EPSG:3413 pipeline)
+        # rather than plain longitude/latitude, so we convert Herschel
+        # Island's coordinates the same way already verified for MODIS.
+        target_x, target_y = latlon_to_3413(LAT, LON)
+ 
+        ds = xr.open_dataset(thredds_url)
+ 
+        point = ds["zos"].sel(x=target_x, y=target_y, method="nearest")
  
         start = now
         end = now + timedelta(hours=24)
+        point = point.sel(time=slice(start, end))
  
-        # Small bounding box around Herschel Island, since this is a
-        # gridded 3km model, not a point station — we pull a tiny area
-        # and select the nearest grid cell ourselves.
-        ds = copernicusmarine.open_dataset(
-            dataset_id=COPERNICUS_DATASET_ID,
-            variables=["zos"],
-            minimum_longitude=LON - 0.2,
-            maximum_longitude=LON + 0.2,
-            minimum_latitude=LAT - 0.2,
-            maximum_latitude=LAT + 0.2,
-            start_datetime=start.strftime("%Y-%m-%dT%H:%M:%S"),
-            end_datetime=end.strftime("%Y-%m-%dT%H:%M:%S"),
-            username=username,
-            password=password,
-        )
- 
-        # Select the grid cell nearest to Herschel Island's coordinates
-        point = ds["zos"].sel(longitude=LON, latitude=LAT, method="nearest")
         times = [str(t) for t in point["time"].values]
         values = [float(v) for v in point.values.flatten()]
+ 
+        if not times:
+            print("COPERNICUS WATER LEVEL: query returned no time steps in the requested window")
+            return None, None
+ 
         return times, values
  
     except Exception as e:
@@ -1879,13 +2000,13 @@ if copernicus_times and copernicus_values:
         ("Total water level (now): ", f"{current_level_total:.2f} m"),
         ["Next 24h range: ", ("", f"{min_level_total:.2f} m"), " to ", ("", f"{max_level_total:.2f} m")],
         "Includes tide + storm surge (not just astronomical tide).",
-        "Source: Copernicus Marine Service (Arctic tide/surge model, ~3km, updated daily)",
+        "Source: TOPAZ6 Arctic model (Norwegian Meteorological Institute / Copernicus Marine, ~3km, updated daily)",
     ]
 else:
     water_level_text = (
-        "Total water level data unavailable — credentials may be missing or the fetch failed. "
-        "Check Action logs. (This is separate from the Tides block above, which uses DFO's "
-        "astronomical tide predictions and does not require Copernicus credentials.)"
+        "Total water level data unavailable — the THREDDS server may be temporarily "
+        "unreachable or slow. Check Action logs. (This is separate from the Tides block "
+        "above, which uses DFO's astronomical tide predictions.)"
     )
  
  
@@ -1964,6 +2085,15 @@ if temp_chart_bytes:
     except Exception as e:
         print("TEMP CHART NOTION UPLOAD FAILED:", e)
         temp_chart_caption = "Chart generated but upload to Notion failed — see Action logs."
+ 
+tdd_histogram_block = None
+if tdd_histogram_bytes:
+    try:
+        uid = upload_image_to_notion(tdd_histogram_bytes, "tdd_histogram.png")
+        tdd_histogram_block = image_block_from_upload(uid)
+    except Exception as e:
+        print("TDD HISTOGRAM NOTION UPLOAD FAILED:", e)
+        tdd_histogram_caption = "Thawing degree days chart generated but upload to Notion failed — see Action logs."
  
 wind_chart_block = None
 if wind_chart_bytes:
@@ -2048,15 +2178,6 @@ blocks.append(link_paragraph("Explore here →", worldview_url, prefix=f"{modis_
 blocks.append(divider())
  
 # --- Sentinel-1 SAR (VV decibel gamma0, orthorectified) ---
-# Placeholder until Sentinel Hub credentials (separate from Copernicus
-# Marine — a different service under the same Copernicus umbrella) are
-# set up. The Explore-here link is ready now: built from plain, documented
-# Copernicus Browser URL parameters (lat/lng/zoom/fromTime/toTime/layerId).
-# Note: the live link you shared included a 'visualizationUrl' parameter,
-# which is a client-side-encrypted blob we can't generate ourselves — this
-# link omits it and relies on 'layerId' alone to select the VV gamma0
-# visualization, which may or may not fully reproduce the exact same view
-# without manual confirmation.
 SENTINEL1_LAYER_ID = "IW-DV-VV-DECIBEL-GAMMA0-ORTHORECTIFIED"
 SENTINEL1_DATASET_ID = "S1_CDAS_IW_VVVH"
  
@@ -2073,13 +2194,208 @@ sentinel1_url = (
     f"&cloudCoverage=30&dateMode=TIME%20RANGE"
 )
  
+ 
+def get_sentinel_hub_token():
+    """
+    Obtains an OAuth2 access token from Copernicus Data Space Ecosystem's
+    identity service using client credentials. Returns the token string,
+    or None on failure.
+    """
+    client_id = os.environ.get("SENTINEL_HUB_CLIENT_ID")
+    client_secret = os.environ.get("SENTINEL_HUB_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        print("SENTINEL-1: credentials not found in environment, skipping")
+        return None
+ 
+    try:
+        token_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+        resp = requests.post(
+            token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+    except Exception as e:
+        print("SENTINEL-1 TOKEN REQUEST FAILED:", e)
+        return None
+ 
+ 
+def find_latest_sentinel1_date(token, lookback_days=10):
+    """
+    Searches the Catalog API for the most recent Sentinel-1 GRD scene
+    covering Herschel Island within the lookback window. Returns a date
+    string (YYYY-MM-DD) or None if nothing was found / the search failed.
+    """
+    try:
+        url = "https://sh.dataspace.copernicus.eu/api/v1/catalog/1.0.0/search"
+        date_to = now
+        date_from = now - timedelta(days=lookback_days)
+        body = {
+            "bbox": [LON - 1.5, LAT - 1.0, LON + 1.5, LAT + 1.0],
+            "datetime": f"{date_from.strftime('%Y-%m-%dT%H:%M:%SZ')}/{date_to.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            "collections": ["sentinel-1-grd"],
+            "limit": 20,
+        }
+        resp = requests.post(
+            url,
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        features = resp.json().get("features", [])
+        if not features:
+            print("SENTINEL-1: no scenes found in catalog search window")
+            return None
+ 
+        # Sort by acquisition datetime, take the most recent
+        features.sort(key=lambda f: f["properties"]["datetime"], reverse=True)
+        latest_datetime = features[0]["properties"]["datetime"]
+        print(f"SENTINEL-1: latest scene found: {latest_datetime}")
+        return latest_datetime[:10]  # YYYY-MM-DD
+ 
+    except Exception as e:
+        print("SENTINEL-1 CATALOG SEARCH FAILED:", e)
+        return None
+ 
+ 
+def fetch_sentinel1_image(token, date_str):
+    """
+    Requests a VV decibel gamma0 orthorectified Sentinel-1 image for the
+    given date, directly reprojected to EPSG:3413 at the same extent used
+    for the MODIS image — no separate rotation step needed here, since
+    Sentinel Hub reprojects server-side (unlike GIBS/WMS for MODIS, which
+    only serves north-up-at-its-own-central-meridian and needed the
+    oversized-fetch-then-rotate workaround).
+ 
+    The dB conversion and 0-255 grayscale scaling are both done inside the
+    evalscript (server-side), so the response is a ready-to-use 8-bit PNG
+    with alpha — avoiding any need for a GeoTIFF-reading library like
+    rasterio/GDAL, which would be a much heavier dependency than anything
+    else in this project. Pixels outside the swath (dataMask == 0) are
+    fully transparent, correctly left "unmapped" rather than faked.
+ 
+    Returns PNG bytes, or None on failure.
+    """
+    try:
+        minx, miny, maxx, maxy = map(float, BBOX_3413.split(","))
+ 
+        # dB range -25 to 0 mapped to 0-255 grayscale, a typical display
+        # stretch for VV gamma0 (matches the documented layer's general
+        # appearance). Pixels outside the swath get alpha=0 (transparent).
+        evalscript = """
+        //VERSION=3
+        function setup() {
+          return {
+            input: ["VV", "dataMask"],
+            output: { bands: 2, sampleType: "UINT8" }
+          };
+        }
+        function evaluatePixel(samples) {
+          if (samples.dataMask == 0) {
+            return [0, 0];
+          }
+          var db = 10 * Math.log(samples.VV) / Math.LN10;
+          var clipped = Math.max(-25, Math.min(0, db));
+          var gray = Math.round((clipped + 25) / 25 * 255);
+          return [gray, 255];
+        }
+        """
+ 
+        request_body = {
+            "input": {
+                "bounds": {
+                    "bbox": [minx, miny, maxx, maxy],
+                    "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/3413"},
+                },
+                "data": [
+                    {
+                        "type": "sentinel-1-grd",
+                        "dataFilter": {
+                            "timeRange": {
+                                "from": f"{date_str}T00:00:00Z",
+                                "to": f"{date_str}T23:59:59Z",
+                            },
+                            "acquisitionMode": "IW",
+                            "polarization": "DV",
+                        },
+                        "processing": {
+                            "backCoeff": "GAMMA0_ELLIPSOID",
+                            "orthorectify": "true",
+                        },
+                    }
+                ],
+            },
+            "output": {
+                "width": MODIS_FINAL_SIZE_PX,
+                "height": MODIS_FINAL_SIZE_PX,
+                "responses": [{"identifier": "default", "format": {"type": "image/png"}}],
+            },
+            "evalscript": evalscript,
+        }
+ 
+        resp = requests.post(
+            "https://sh.dataspace.copernicus.eu/api/v1/process",
+            json=request_body,
+            headers={"Authorization": f"Bearer {token}", "Accept": "image/png"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+ 
+        if resp.content[:8] != b"\x89PNG\r\n\x1a\n":
+            print("SENTINEL-1: response was not a valid PNG")
+            return None
+ 
+        return resp.content
+ 
+    except Exception as e:
+        print("SENTINEL-1 IMAGE FETCH FAILED:", e)
+        return None
+ 
+ 
+sentinel1_bytes = None
+sentinel1_caption = "Sentinel-1 SAR image unavailable — credentials missing or fetch failed. Check Action logs."
+ 
+sh_token = get_sentinel_hub_token()
+if sh_token:
+    s1_date = find_latest_sentinel1_date(sh_token)
+    if s1_date:
+        s1_raw = fetch_sentinel1_image(sh_token, s1_date)
+        if s1_raw:
+            # Composite onto an opaque background first (annotate_modis_image
+            # expects RGB, not RGBA) so the transparent/uncovered areas
+            # render as a neutral gray rather than failing on mode mismatch.
+            from PIL import Image
+            import io as _io
+            rgba_img = Image.open(_io.BytesIO(s1_raw)).convert("RGBA")
+            background = Image.new("RGBA", rgba_img.size, (50, 50, 50, 255))
+            composited = Image.alpha_composite(background, rgba_img).convert("RGB")
+            buf = _io.BytesIO()
+            composited.save(buf, format="PNG")
+            sentinel1_bytes = annotate_modis_image(buf.getvalue())
+            sentinel1_caption = (
+                f"Sentinel-1 SAR, VV decibel gamma0 (orthorectified), {s1_date}. "
+                f"Dark gray areas are outside that day's satellite swath coverage. "
+                f"Source: Copernicus Sentinel-1 via Sentinel Hub."
+            )
+ 
 blocks.append(heading("🛰 Satellite — Sentinel-1 SAR (VV gamma0)"))
-blocks.append(paragraph(
-    "Placeholder — Sentinel Hub credentials not yet configured. "
-    "Once set up, this will show the latest available Sentinel-1 VV decibel "
-    "gamma0 (orthorectified) image, same extent and annotations as the MODIS block above, "
-    "leaving any area not covered by that day's satellite pass unmapped."
-))
+sentinel1_block = None
+if sentinel1_bytes:
+    try:
+        uid = upload_image_to_notion(sentinel1_bytes, "sentinel1.png")
+        sentinel1_block = image_block_from_upload(uid)
+    except Exception as e:
+        print("SENTINEL-1 NOTION UPLOAD FAILED:", e)
+        sentinel1_caption = "Sentinel-1 image generated but upload to Notion failed — see Action logs."
+if sentinel1_block:
+    blocks.append(sentinel1_block)
+blocks.append(paragraph(sentinel1_caption))
 blocks.append(link_paragraph("Explore here →", sentinel1_url, prefix="Browse Sentinel-1 imagery directly on Copernicus Browser.  "))
 blocks.append(divider())
  
@@ -2124,6 +2440,14 @@ blocks.append(heading("📈 Temperature — last 30 days vs. 30-year average"))
 if temp_chart_block:
     blocks.append(temp_chart_block)
 blocks.append(paragraph(temp_chart_caption if temp_chart_bytes else "Chart could not be generated — see Action logs."))
+ 
+blocks.append(divider())
+ 
+# --- Thawing degree days histogram (full width, needs room for the image) ---
+blocks.append(heading("🌡 Thawing Degree Days — annual totals"))
+if tdd_histogram_block:
+    blocks.append(tdd_histogram_block)
+blocks.append(paragraph(tdd_histogram_caption if tdd_histogram_bytes else "Thawing degree days chart could not be generated — see Action logs."))
  
 blocks.append(divider())
  
