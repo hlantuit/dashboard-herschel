@@ -34,6 +34,13 @@ jobs:
       # -------------------------
       # 4. Run dashboard script
       # -------------------------
+      # PYTHONUNBUFFERED=1 (and the -u flag) force Python's stdout/stderr
+      # to flush immediately rather than block-buffering — a real, known
+      # GitHub Actions issue where print() output can be invisible in the
+      # log for the entire run, then all appear at once at the very end
+      # (or not at all, if the run is cancelled before that final flush).
+      # This may fully explain apparent "silent hangs" that were actually
+      # a script running and printing normally the whole time.
       - name: Run dashboard update
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -42,7 +49,8 @@ jobs:
           COPERNICUS_PASSWORD: ${{ secrets.COPERNICUS_PASSWORD }}
           SENTINEL_HUB_CLIENT_ID: ${{ secrets.SENTINEL_HUB_CLIENT_ID }}
           SENTINEL_HUB_CLIENT_SECRET: ${{ secrets.SENTINEL_HUB_CLIENT_SECRET }}
-        run: python dashboard_update.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u dashboard_update.py
       # -------------------------
       # 5. Commit the historical data cache back to the repo, if it changed
       # -------------------------
@@ -59,3 +67,4 @@ jobs:
           git add cache/daily_temps_cache.json
           git diff --staged --quiet || git commit -m "Update historical data cache"
           git push
+ 
