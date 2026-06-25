@@ -3264,8 +3264,7 @@ def build_water_level_chart(times, values, yearly_mean=None):
         # horizontal line rather than needing its own value label.
         if yearly_mean is not None:
             ax.axhline(0, color=NOTION_GRAY_LINE, linewidth=1.5, linestyle="--", zorder=1.5)
-            ax.text(max(hours) * 0.99, 0, f" yearly avg ({yearly_mean:.2f}m)",
-                    color=NOTION_GRAY_LINE, fontsize=8, va="bottom", ha="right")
+            place_reference_line_label(ax, hours, plot_values, f"yearly avg ({yearly_mean:.2f}m)", NOTION_GRAY_LINE)
  
         for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
