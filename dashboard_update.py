@@ -1,4 +1,3 @@
-
 import os
 import io
 import json
@@ -1302,8 +1301,11 @@ def get_marine_forecast():
         import xml.etree.ElementTree as ET
  
         url = "https://weather.gc.ca/rss/marine/16000_e.xml"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
+        # weather.gc.ca's RSS endpoints have shown occasional transient
+        # connection timeouts (seen in practice on a real run), so this
+        # uses the same retry helper as the historical weather fetches
+        # above, rather than a single unprotected attempt.
+        r = get_with_retry(url, timeout=15, retries=2, backoff_seconds=5)
  
         ns = {"atom": "http://www.w3.org/2005/Atom"}
         root = ET.fromstring(r.content)
@@ -1396,8 +1398,10 @@ def get_weather_alerts():
         import xml.etree.ElementTree as ET
  
         url = f"https://weather.gc.ca/rss/alerts/{LAT}_{LON}_e.xml"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
+        # Same retry treatment as the marine forecast fetch above —
+        # weather.gc.ca has shown transient connection timeouts in
+        # practice on a real run.
+        r = get_with_retry(url, timeout=15, retries=2, backoff_seconds=5)
  
         ns = {"atom": "http://www.w3.org/2005/Atom"}
         root = ET.fromstring(r.content)
@@ -2665,51 +2669,46 @@ def annotate_plain_image(png_bytes, points=None, scale_km=50, half_width_m=150_0
             seg_p2 = (p1[0] + (p2[0] - p1[0]) * t1, p1[1] + (p2[1] - p1[1]) * t1)
             draw.line([seg_p1, seg_p2], fill=(255, 255, 255), width=2)
  
-        # --- Coastline overlay, in white (annotate_plain_image only —
+        # --- Coastline overlay, in white (annotate_plain_image only --
         # i.e. the Sentinel-1/radar image, where seeing the true
         # coastline against the SAR backscatter is genuinely useful,
         # unlike MODIS's true-color photo where the coastline is usually
-        # already visible). Uses Natural Earth's public-domain 1:10m
-        # scale coastline (a real, verified GeoJSON structure: a
-        # FeatureCollection of LineString features, each with its own
-        # small bbox), filtered down to just the handful of line
-        # segments that actually fall within our small display extent
-        # before projecting/drawing. The 1:50m scale was tried first
-        # (smaller file, ~445KB) but was confirmed too coarse — that
-        # scale is meant for world/continental maps, where a single
-        # segment can span tens of km, which looked like "only 15-20
-        # blocky segments" at our actual ~300km regional zoom level.
-        # 1:10m (~2.93MB) is the appropriate detail level for this zoom;
-        # still a fast, one-shot fetch for a CI runner.
+        # already visible).
+        #
+        # Uses a small, pre-filtered local extract of OpenStreetMap's
+        # natural=coastline data (coastline_data.geojson, committed to
+        # this repo), rather than fetching a global coastline dataset
+        # fresh every run.
+        #
+        # This replaced Natural Earth's 1:10m-scale global coastline.
+        # Natural Earth's line is a generalized cartographic
+        # simplification, not traced from imagery, so even at its finest
+        # published scale it doesn't resolve small channels, bars, and
+        # spits accurately in a low-relief delta environment like this
+        # one. OSM's natural=coastline tag is community-traced directly
+        # from satellite imagery (MAXAR, Esri World Imagery, and similar
+        # sources), and specifically marks the outer ocean coast as
+        # distinct from inland water features, giving cleaner, more
+        # accurate detail at this zoom level without picking up internal
+        # river/channel boundaries as noise.
         try:
             coastline_lon_min = LON - (half_width_m / 111_000) * 1.5
             coastline_lon_max = LON + (half_width_m / 111_000) * 1.5
             coastline_lat_min = LAT - (half_width_m / 111_000) * 1.5
             coastline_lat_max = LAT + (half_width_m / 111_000) * 1.5
- 
-            coast_resp = requests.get(
-                "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_coastline.geojson",
-                timeout=20,
+
+            coastline_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "coastline_data.geojson"
             )
-            coast_resp.raise_for_status()
-            coast_geojson = coast_resp.json()
- 
+            with open(coastline_path) as _f:
+                coast_geojson = json.load(_f)
+
             segments_drawn = 0
             for feature in coast_geojson.get("features", []):
-                fbbox = feature.get("bbox")
-                if fbbox:
-                    fminx, fminy, fmaxx, fmaxy = fbbox
-                    # Skip features whose own bbox doesn't overlap our
-                    # display extent at all — cheap rejection before
-                    # touching the (potentially long) coordinate list.
-                    if (fmaxx < coastline_lon_min or fminx > coastline_lon_max or
-                            fmaxy < coastline_lat_min or fminy > coastline_lat_max):
-                        continue
- 
                 geom = feature.get("geometry", {})
                 if geom.get("type") != "LineString":
                     continue
- 
+
                 coords = geom.get("coordinates", [])
                 prev_px = None
                 for coord_lon, coord_lat in coords:
@@ -2722,8 +2721,8 @@ def annotate_plain_image(png_bytes, points=None, scale_km=50, half_width_m=150_0
                         draw.line([prev_px, px], fill=(255, 255, 255), width=2)
                         segments_drawn += 1
                     prev_px = px
- 
-            print(f"SENTINEL-1 COASTLINE: drew {segments_drawn} line segments")
+
+            print(f"SENTINEL-1 COASTLINE: drew {segments_drawn} line segments from local OSM extract")
         except Exception as e:
             print("SENTINEL-1 COASTLINE OVERLAY FAILED (continuing without it):", e)
  
